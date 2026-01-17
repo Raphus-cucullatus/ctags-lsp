@@ -65,13 +65,13 @@ language-servers = [ "ctags-lsp" ]
 Most projects are completely indexed in less than 1s. If startup is slow for your workspace:
 
 - Limit which languages are being indexed with `--languages`. The option is passed through to ctags unchanged; for available options see the [universal-ctags manual](https://docs.ctags.io/en/latest/man/ctags.1.html#language-selection-and-mapping-options) on the topic.
-- Leverage an existing tagfile so `ctags-lsp` doesn’t have to run `ctags` on startup.
+- Leverage an existing tagfile, so `ctags-lsp` doesn’t have to run `ctags` on startup, with `--tagfile`.
 
 ### Tagfiles
 
-On startup the server will look for `tags`, `.tags` or `.git/tags` in the workspace root, and use the first tagfile it finds. In this case, it will read the tagfile and not scan the workspace with `ctags`. This is only intended as a fallback option to improve performance, and should not be used otherwise. `ctags-lsp` will never write or update tagfiles.
+You can use an existing tagfile with `--tagfile=<path>`. When set, the server parses the tagfile and skips the workspace scan. This is only intended as a fallback option to possibly improve performance, and should not be used otherwise.
 
-You can point to a custom tagfile, instead of the defaults, with `--tagfile`.
+`ctags-lsp` will never write or update tagfiles.
 
 For obvious reasons, `--languages` has no effect when using a tagfile.
 
@@ -90,6 +90,6 @@ Options:
   --help               Show this help message
   --version            Show version information
   --ctags-bin <name>   Use custom ctags binary name (default: "ctags")
-  --tagfile <path>     Use custom tagfile (default: tries "tags", ".tags" and ".git/tags")
+  --tagfile <path> Use tagfile instead of scanning
   --languages <value>  Pass through language filter list to ctags
 ```

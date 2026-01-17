@@ -186,6 +186,42 @@ func parseLSPResponse(t *testing.T, raw string) rpcSuccessEnvelope {
 	return resp
 }
 
+func parseLSPErrorResponse(t *testing.T, raw string) RPCErrorResponse {
+	t.Helper()
+
+	parts := strings.SplitN(raw, "\r\n\r\n", 2)
+	if len(parts) != 2 {
+		t.Fatalf("expected response with headers and body, got %q", raw)
+	}
+
+	contentLength := 0
+	for _, line := range strings.Split(parts[0], "\r\n") {
+		if after, ok := strings.CutPrefix(line, "Content-Length:"); ok {
+			length, err := strconv.Atoi(strings.TrimSpace(after))
+			if err != nil {
+				t.Fatalf("invalid Content-Length: %v", err)
+			}
+			contentLength = length
+			break
+		}
+	}
+	if contentLength == 0 {
+		t.Fatalf("missing Content-Length header in %q", parts[0])
+	}
+
+	body := parts[1]
+	if contentLength != len(body) {
+		t.Fatalf("expected Content-Length %d, got %d", contentLength, len(body))
+	}
+
+	var resp RPCErrorResponse
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	return resp
+}
+
 func initializeServer(t *testing.T, server *Server, rootPath string) rpcSuccessEnvelope {
 	t.Helper()
 
@@ -194,6 +230,13 @@ func initializeServer(t *testing.T, server *Server, rootPath string) rpcSuccessE
 }
 
 func initializeServerWithParams(t *testing.T, server *Server, params InitializeParams) rpcSuccessEnvelope {
+	t.Helper()
+
+	raw := initializeServerWithParamsRaw(t, server, params)
+	return parseLSPResponse(t, raw)
+}
+
+func initializeServerWithParamsRaw(t *testing.T, server *Server, params InitializeParams) string {
 	t.Helper()
 
 	paramsBytes, err := json.Marshal(params)
@@ -223,7 +266,7 @@ func initializeServerWithParams(t *testing.T, server *Server, params InitializeP
 	server.output = &output
 	handleRequest(server, parsedReq)
 
-	return parseLSPResponse(t, output.String())
+	return output.String()
 }
 
 func hasTag(entries []TagEntry, name, path string) bool {
@@ -243,6 +286,102 @@ func parseFlagsForTest(t *testing.T, args []string) *Config {
 		t.Fatalf("parse flags: %v", err)
 	}
 	return config
+}
+
+func TestParseFlagsUseTagfilePath(t *testing.T) {
+	config := parseFlagsForTest(t, []string{"ctags-lsp", "--tagfile=custom.tags"})
+	if config.tagfilePath != "custom.tags" {
+		t.Fatalf("expected tagfile path to be %q, got %q", "custom.tags", config.tagfilePath)
+	}
+}
+
+func TestInitializeRejectsMissingTagfile(t *testing.T) {
+	tempDir := t.TempDir()
+	server := newTestServer(t)
+	server.tagfilePath = "missing.tags"
+
+	resp := initializeServerWithParamsRaw(t, server, InitializeParams{
+		RootURI: pathToFileURI(tempDir),
+	})
+	errorResp := parseLSPErrorResponse(t, resp)
+
+	if errorResp.Error == nil || errorResp.Error.Code != -32602 {
+		t.Fatalf("expected invalid params error, got %#v", errorResp.Error)
+	}
+	if !strings.Contains(fmt.Sprint(errorResp.Error.Data), "missing.tags") {
+		t.Fatalf("expected error data to mention missing tagfile, got %v", errorResp.Error.Data)
+	}
+	if server.initialized {
+		t.Fatal("expected server initialization to fail for missing tagfile")
+	}
+}
+
+func TestScanWorkspaceExplicitTagfile(t *testing.T) {
+	tempDir := t.TempDir()
+
+	sourcePath := filepath.Join(tempDir, "main.go")
+	if err := os.WriteFile(sourcePath, []byte("package demo\n"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	tagfilePath := filepath.Join(tempDir, "tags")
+	tagfileEntryPath := filepath.Join(tempDir, "tagfile_only.go")
+	tagfileContent := "TagfileOnly\t" + filepath.Base(tagfileEntryPath) + "\t1;\"\n"
+	if err := os.WriteFile(tagfilePath, []byte(tagfileContent), 0o644); err != nil {
+		t.Fatalf("write tagfile: %v", err)
+	}
+
+	t.Run("ignored without explicit flag", func(t *testing.T) {
+		server := newTestServer(t)
+		server.rootURI = pathToFileURI(tempDir)
+		if err := server.scanWorkspace(server.rootURI); err != nil {
+			t.Fatalf("scan workspace: %v", err)
+		}
+		if hasTag(server.tagEntries, "TagfileOnly", pathToFileURI(tagfileEntryPath)) {
+			t.Fatal("expected tagfile entry to be ignored without --tagfile")
+		}
+	})
+
+	t.Run("uses explicit tagfile", func(t *testing.T) {
+		server := newTestServer(t)
+		server.rootURI = pathToFileURI(tempDir)
+		server.tagfilePath = tagfilePath
+		if err := server.scanWorkspace(server.rootURI); err != nil {
+			t.Fatalf("scan workspace: %v", err)
+		}
+		if !hasTag(server.tagEntries, "TagfileOnly", pathToFileURI(tagfileEntryPath)) {
+			t.Fatal("expected tagfile entry to be loaded with --tagfile")
+		}
+	})
+
+	t.Run("uses explicit relative tagfile", func(t *testing.T) {
+		server := newTestServer(t)
+		server.rootURI = pathToFileURI(tempDir)
+		server.tagfilePath = filepath.Base(tagfilePath)
+		if err := server.scanWorkspace(server.rootURI); err != nil {
+			t.Fatalf("scan workspace: %v", err)
+		}
+		if !hasTag(server.tagEntries, "TagfileOnly", pathToFileURI(tagfileEntryPath)) {
+			t.Fatal("expected tagfile entry to be loaded with relative --tagfile")
+		}
+	})
+}
+
+func TestScanWorkspaceMissingExplicitTagfile(t *testing.T) {
+	tempDir := t.TempDir()
+
+	sourcePath := filepath.Join(tempDir, "main.go")
+	if err := os.WriteFile(sourcePath, []byte("package demo\n"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	server := newTestServer(t)
+	server.rootURI = pathToFileURI(tempDir)
+	server.tagfilePath = "missing.tags"
+
+	if err := server.scanWorkspace(server.rootURI); err == nil {
+		t.Fatal("expected scan workspace to fail for missing tagfile")
+	}
 }
 
 func newTestServer(t *testing.T) *Server {

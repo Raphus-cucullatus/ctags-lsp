@@ -178,11 +178,19 @@ type FileCache struct {
 	content map[string][]string
 }
 
-func (server *Server) setRootURI(rootURI string) {
+func (server *Server) setRootURI(rootURI string) error {
 	server.rootURI = rootURI
-	if err := server.scanWorkspace(); err != nil {
+	if server.tagfilePath != "" {
+		tagsPath := resolveTagfilePath(rootURI, server.tagfilePath)
+		if _, err := os.Stat(tagsPath); err != nil {
+			// Clients can initialize with a workspace that lacks the configured tagfile, so fail fast.
+			return fmt.Errorf("Requested tagfile unavailable: %w", err)
+		}
+	}
+	if err := server.scanWorkspace(rootURI); err != nil {
 		log.Printf("Internal error while scanning workspace: %v", err)
 	}
+	return nil
 }
 
 func handleRequest(server *Server, req RPCRequest) {
@@ -251,7 +259,10 @@ func handleInitialize(server *Server, req RPCRequest) {
 		}
 		rootURI = pathToFileURI(cwd)
 	}
-	server.setRootURI(rootURI)
+	if err := server.setRootURI(rootURI); err != nil {
+		server.sendError(req.ID, -32602, "Invalid params", err.Error())
+		return
+	}
 
 	result := InitializeResult{
 		Capabilities: ServerCapabilities{
@@ -655,6 +666,15 @@ func normalizeFileURI(uri string) (string, error) {
 func fileURIToPath(uri string) string {
 	parsed, _ := url.Parse(uri)
 	return filepath.Clean(filepath.FromSlash(parsed.Path))
+}
+
+func resolveTagfilePath(rootURI, tagfilePath string) string {
+	tagsPath := tagfilePath
+	if !filepath.IsAbs(tagsPath) {
+		rootDir := fileURIToPath(rootURI)
+		tagsPath = filepath.Join(rootDir, tagsPath)
+	}
+	return filepath.Clean(tagsPath)
 }
 
 // pathToFileURI expects an absolute, cleaned filesystem path.

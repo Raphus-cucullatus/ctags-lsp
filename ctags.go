@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -23,33 +22,12 @@ func (server *Server) ctagsArgs(extra ...string) []string {
 }
 
 // scanWorkspace populates `server.tagEntries` from either:
-// - an explicit `--tagfile`, then
-// - a discovered tags file (see `findTagsFile`), or
-// - a fresh ctags scan of the workspace.
-func (server *Server) scanWorkspace() error {
+// - a ctags scan of the workspace, or
+// - a tagfile (when `--tagfile` is set).
+func (server *Server) scanWorkspace(rootURI string) error {
+	rootDir := fileURIToPath(rootURI)
 	if server.tagfilePath != "" {
-		rootDir := fileURIToPath(server.rootURI)
-		tagsPath := server.tagfilePath
-		if !filepath.IsAbs(tagsPath) {
-			tagsPath = filepath.Join(rootDir, tagsPath)
-		}
-		tagsPath = filepath.Clean(tagsPath)
-		if _, err := os.Stat(tagsPath); err != nil {
-			return fmt.Errorf("tagfile not found at %q: %v", tagsPath, err)
-		}
-		entries, err := parseTagfile(tagsPath)
-		if err != nil {
-			return err
-		}
-
-		server.mutex.Lock()
-		server.tagEntries = append(server.tagEntries, entries...)
-		server.mutex.Unlock()
-		return nil
-	}
-
-	rootDir := fileURIToPath(server.rootURI)
-	if tagsPath, found := findTagsFile(rootDir); found {
+		tagsPath := resolveTagfilePath(rootURI, server.tagfilePath)
 		entries, err := parseTagfile(tagsPath)
 		if err != nil {
 			return err

@@ -122,7 +122,7 @@ Options:
   --help               Show this help message
   --version            Show version information
   --ctags-bin <name>   Use custom ctags binary name (default: "ctags")
-  --tagfile <path>     Use custom tagfile (default: tries "tags", ".tags" and ".git/tags")
+  --tagfile <path>     Use tagfile instead of scanning
   --languages <value>  Pass through language filter list to ctags
 `, program)
 }

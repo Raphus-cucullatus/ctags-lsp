@@ -56,24 +56,6 @@ func (kindMap *tagfileKindMap) isKindName(kind string) bool {
 	return kindMap.kindNames[kind]
 }
 
-// findTagsFile checks for a tags file in a few conventional locations under `root`.
-func findTagsFile(root string) (string, bool) {
-	tagsLocations := []string{
-		"tags",
-		".tags",
-		".git/tags",
-	}
-
-	for _, location := range tagsLocations {
-		tagsPath := filepath.Join(root, location)
-		if _, err := os.Stat(tagsPath); err == nil {
-			return tagsPath, true
-		}
-	}
-
-	return "", false
-}
-
 // parseTagfile reads a tags file and returns entries in the same shape as `processTagsOutput`.
 func parseTagfile(tagsPath string) ([]TagEntry, error) {
 	file, err := os.Open(tagsPath)
