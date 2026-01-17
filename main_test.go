@@ -101,6 +101,13 @@ func TestInitializeRootSelection(t *testing.T) {
 	rootDir := t.TempDir()
 	otherDir := t.TempDir()
 
+	for _, dir := range []string{rootDir, otherDir} {
+		path := filepath.Join(dir, "placeholder.go")
+		if err := os.WriteFile(path, []byte("package demo\n"), 0o644); err != nil {
+			t.Fatalf("write placeholder file: %v", err)
+		}
+	}
+
 	rootURI := pathToFileURI(rootDir)
 	otherURI := pathToFileURI(otherDir)
 

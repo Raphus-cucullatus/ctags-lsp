@@ -178,6 +178,13 @@ type FileCache struct {
 	content map[string][]string
 }
 
+func (server *Server) setRootURI(rootURI string) {
+	server.rootURI = rootURI
+	if err := server.scanWorkspace(); err != nil {
+		log.Printf("Internal error while scanning workspace: %v", err)
+	}
+}
+
 func handleRequest(server *Server, req RPCRequest) {
 	if !server.initialized && req.Method != "initialize" && req.Method != "shutdown" && req.Method != "exit" {
 		if isNotification(req) {
@@ -244,12 +251,7 @@ func handleInitialize(server *Server, req RPCRequest) {
 		}
 		rootURI = pathToFileURI(cwd)
 	}
-	server.rootURI = rootURI
-
-	if err := server.scanWorkspace(); err != nil {
-		server.sendError(req.ID, -32603, "Internal error while scanning tags", err.Error())
-		return
-	}
+	server.setRootURI(rootURI)
 
 	result := InitializeResult{
 		Capabilities: ServerCapabilities{
