@@ -96,45 +96,44 @@ func (server *Server) scanWorkspace() error {
 	return nil
 }
 
-// listWorkspaceFiles returns file paths using git, jj, or a directory walk.
+// listWorkspaceFiles returns file paths using the first available tool.
 // These paths are not normalized and may be relative or absolute.
-func listWorkspaceFiles(rootDir string) ([]string, error) {
-	if isGitRepo(rootDir) {
-		output, err := exec.Command("git", "-C", rootDir, "ls-files").Output()
-		if err != nil {
-			return nil, err
-		}
-		files := strings.Split(strings.TrimSpace(string(output)), "\n")
-		return files, nil
+func listWorkspaceFiles(workspaceRoot string) ([]string, error) {
+	output, err := exec.Command("fd", "--type", "file", ".", workspaceRoot).Output()
+	if err == nil {
+		return parseFileList("fd", output)
 	}
 
-	if isJjRepo(rootDir) {
-		output, err := exec.Command("jj", "file", "list", "--repository", rootDir).Output()
-		if err != nil {
-			return nil, err
-		}
-		files := strings.Split(strings.TrimSpace(string(output)), "\n")
-		return files, nil
+	output, err = exec.Command("rg", "--files", workspaceRoot).Output()
+	if err == nil {
+		return parseFileList("rg", output)
 	}
 
+	output, err = exec.Command("git", "-C", workspaceRoot, "ls-files", "-co", "--exclude-standard").Output()
+	if err == nil {
+		return parseFileList("git", output)
+	}
+
+	// WalkDir fallback. Slow, but guaranteed to work everywhere.
 	var files []string
-	filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
+	filepath.WalkDir(workspaceRoot, func(path string, d fs.DirEntry, err error) error {
 		if err == nil && !d.IsDir() {
 			files = append(files, path)
 		}
 		return nil
 	})
+	if len(files) == 0 {
+		return nil, fmt.Errorf("empty workspace: no files found")
+	}
 	return files, nil
 }
 
-func isGitRepo(path string) bool {
-	cmd := exec.Command("git", "-C", path, "rev-parse", "--is-inside-work-tree")
-	return cmd.Run() == nil
-}
-
-func isJjRepo(path string) bool {
-	cmd := exec.Command("jj", "repo", "info", "--repository", path)
-	return cmd.Run() == nil
+func parseFileList(toolName string, output []byte) ([]string, error) {
+	trimmed := strings.TrimSpace(string(output))
+	if trimmed == "" {
+		return nil, fmt.Errorf("empty workspace: %s returned no files", toolName)
+	}
+	return strings.Split(trimmed, "\n"), nil
 }
 
 // scanSingleFileTag rescans a single file URI and drops any previous entries for that URI.
