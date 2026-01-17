@@ -14,7 +14,9 @@ import (
 )
 
 type InitializeParams struct {
-	RootURI string `json:"rootUri"`
+	RootURI          string            `json:"rootUri"`
+	RootPath         string            `json:"rootPath"`
+	WorkspaceFolders []WorkspaceFolder `json:"workspaceFolders"`
 }
 
 type InitializeResult struct {
@@ -39,6 +41,11 @@ type TextDocumentSyncOptions struct {
 	Change    int  `json:"change"`
 	OpenClose bool `json:"openClose"`
 	Save      bool `json:"save"`
+}
+
+type WorkspaceFolder struct {
+	URI  string `json:"uri"`
+	Name string `json:"name"`
 }
 
 type CompletionOptions struct {
@@ -223,22 +230,21 @@ func handleInitialize(server *Server, req RPCRequest) {
 		return
 	}
 
-	if params.RootURI == "" {
+	rootURI, err := selectRootURI(params)
+	if err != nil {
+		server.sendError(req.ID, -32602, "Invalid params", err.Error())
+		return
+	}
+
+	if rootURI == "" {
 		cwd, err := os.Getwd()
 		if err != nil {
 			server.sendError(req.ID, -32603, "Failed to get current working directory", err.Error())
 			return
 		}
-		rootURI := pathToFileURI(cwd)
-		server.rootURI = rootURI
-	} else {
-		normalizedRootURI, err := normalizeFileURI(params.RootURI)
-		if err != nil {
-			server.sendError(req.ID, -32602, "Invalid params", err.Error())
-			return
-		}
-		server.rootURI = normalizedRootURI
+		rootURI = pathToFileURI(cwd)
 	}
+	server.rootURI = rootURI
 
 	if err := server.scanWorkspace(); err != nil {
 		server.sendError(req.ID, -32603, "Internal error while scanning tags", err.Error())
@@ -267,6 +273,36 @@ func handleInitialize(server *Server, req RPCRequest) {
 
 	server.sendResult(req.ID, result)
 	server.initialized = true
+}
+
+func selectRootURI(params InitializeParams) (string, error) {
+	if len(params.WorkspaceFolders) > 0 {
+		// TODO: Need to support multiple workspaces in the future.
+		normalizedURI, err := normalizeFileURI(params.WorkspaceFolders[0].URI)
+		if err != nil {
+			return "", err
+		}
+		return normalizedURI, nil
+	}
+
+	if params.RootURI != "" {
+		normalizedURI, err := normalizeFileURI(params.RootURI)
+		if err != nil {
+			return "", err
+		}
+		return normalizedURI, nil
+	}
+
+	if params.RootPath != "" {
+		cleanPath := filepath.Clean(params.RootPath)
+		absPath, err := filepath.Abs(cleanPath)
+		if err != nil {
+			return "", err
+		}
+		return pathToFileURI(absPath), nil
+	}
+
+	return "", nil
 }
 
 func handleShutdown(server *Server, req RPCRequest) {

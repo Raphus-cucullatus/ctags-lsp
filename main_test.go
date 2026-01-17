@@ -28,15 +28,7 @@ func TestInitializeLSPRequest(t *testing.T) {
 		t.Fatalf("write source file: %v", err)
 	}
 
-	config := parseFlagsForTest(t, []string{"ctags-lsp"})
-	server := &Server{
-		cache: FileCache{
-			content: make(map[string][]string),
-		},
-		ctagsBin:    config.ctagsBin,
-		tagfilePath: config.tagfilePath,
-		languages:   config.languages,
-	}
+	server := newTestServer(t)
 
 	resp := initializeServer(t, server, tempDir)
 
@@ -105,6 +97,52 @@ func TestInitializeLSPRequest(t *testing.T) {
 	})
 }
 
+func TestInitializeRootSelection(t *testing.T) {
+	rootDir := t.TempDir()
+	otherDir := t.TempDir()
+
+	rootURI := pathToFileURI(rootDir)
+	otherURI := pathToFileURI(otherDir)
+
+	cases := []struct {
+		name   string
+		params InitializeParams
+		want   string
+	}{
+		{
+			name: "workspace folders win",
+			params: InitializeParams{
+				RootURI: rootURI,
+				WorkspaceFolders: []WorkspaceFolder{
+					{URI: otherURI, Name: "primary"},
+				},
+			},
+			want: otherURI,
+		},
+		{
+			name:   "root uri fallback",
+			params: InitializeParams{RootURI: rootURI},
+			want:   rootURI,
+		},
+		{
+			name:   "root path fallback",
+			params: InitializeParams{RootPath: rootDir},
+			want:   rootURI,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newTestServer(t)
+			initializeServerWithParams(t, server, tc.params)
+
+			if server.rootURI != tc.want {
+				t.Fatalf("expected root uri %q, got %q", tc.want, server.rootURI)
+			}
+		})
+	}
+}
+
 func parseLSPResponse(t *testing.T, raw string) rpcSuccessEnvelope {
 	t.Helper()
 
@@ -145,7 +183,13 @@ func initializeServer(t *testing.T, server *Server, rootPath string) rpcSuccessE
 	t.Helper()
 
 	rootURI := "file://" + filepath.ToSlash(rootPath)
-	paramsBytes, err := json.Marshal(InitializeParams{RootURI: rootURI})
+	return initializeServerWithParams(t, server, InitializeParams{RootURI: rootURI})
+}
+
+func initializeServerWithParams(t *testing.T, server *Server, params InitializeParams) rpcSuccessEnvelope {
+	t.Helper()
+
+	paramsBytes, err := json.Marshal(params)
 	if err != nil {
 		t.Fatalf("marshal params: %v", err)
 	}
@@ -192,4 +236,18 @@ func parseFlagsForTest(t *testing.T, args []string) *Config {
 		t.Fatalf("parse flags: %v", err)
 	}
 	return config
+}
+
+func newTestServer(t *testing.T) *Server {
+	t.Helper()
+
+	config := parseFlagsForTest(t, []string{"ctags-lsp"})
+	return &Server{
+		cache: FileCache{
+			content: make(map[string][]string),
+		},
+		ctagsBin:    config.ctagsBin,
+		tagfilePath: config.tagfilePath,
+		languages:   config.languages,
+	}
 }
