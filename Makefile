@@ -1,6 +1,5 @@
 COMMIT := $(shell jj log --template 'commit_id.short(8)' --no-graph --limit 1)
-VERSION := development build ($(COMMIT))
-LDFLAGS := -X 'main.version=$(VERSION)'
+LDFLAGS := -X 'main.version=$(COMMIT)'
 
 .PHONY: build linux clean
 
@@ -11,4 +10,4 @@ linux:
 	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)"
 
 clean:
-	rm ctags-lsp*
+	rm -f ctags-lsp
