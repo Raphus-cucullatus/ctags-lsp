@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 )
@@ -675,15 +674,6 @@ func resolveTagfilePath(rootURI, tagfilePath string) string {
 		tagsPath = filepath.Join(rootDir, tagsPath)
 	}
 	return filepath.Clean(tagsPath)
-}
-
-// pathToFileURI expects an absolute, cleaned filesystem path.
-func pathToFileURI(path string) string {
-	slashPath := filepath.ToSlash(path)
-	if runtime.GOOS == "windows" {
-		slashPath = "/" + slashPath // Turns invalid "file://C:/" into valid "file:///C:/"
-	}
-	return (&url.URL{Scheme: "file", Path: slashPath}).String()
 }
 
 // normalizePath expects raw filesystem paths from ctags/tagfiles, not file:// URIs.

@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 )
 
@@ -125,25 +124,6 @@ Options:
   --tagfile <path>     Use tagfile instead of scanning
   --languages <value>  Pass through language filter list to ctags
 `, program)
-}
-
-func getInstallInstructions() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return "You can install Universal Ctags with: brew install universal-ctags"
-	case "linux":
-		return "You can install Universal Ctags with:\n" +
-			"- Ubuntu/Debian: sudo apt-get install universal-ctags\n" +
-			"- Fedora: sudo dnf install ctags\n" +
-			"- Arch Linux: sudo pacman -S ctags"
-	case "windows":
-		return "You can install Universal Ctags with:\n" +
-			"- Chocolatey: choco install universal-ctags\n" +
-			"- Scoop: scoop install universal-ctags\n" +
-			"Or download from: https://github.com/universal-ctags/ctags-win32/releases"
-	default:
-		return "Please visit https://github.com/universal-ctags/ctags for installation instructions"
-	}
 }
 
 func checkCtagsInstallation(ctagsBin string) error {

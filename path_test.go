@@ -1,9 +1,7 @@
 package main
 
 import (
-	"net/url"
 	"path/filepath"
-	"runtime"
 	"testing"
 )
 
@@ -98,12 +96,4 @@ func TestNormalizeFileURIEmptyString(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty file URI")
 	}
-}
-
-func encodePathForTest(path string) string {
-	slashPath := filepath.ToSlash(path)
-	if runtime.GOOS == "windows" {
-		slashPath = "/" + slashPath
-	}
-	return (&url.URL{Scheme: "file", Path: slashPath}).String()[len("file://"):]
 }
