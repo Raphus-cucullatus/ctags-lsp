@@ -6,6 +6,9 @@ LDFLAGS := -X 'main.version=$(COMMIT)'
 build:
 	go build -ldflags "$(LDFLAGS)"
 
+release-build:
+	go build -ldflags "-s -w $(LDFLAGS)"
+
 linux:
 	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)"
 
