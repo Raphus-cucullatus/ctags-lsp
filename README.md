@@ -1,5 +1,5 @@
-> **Attention!**
-> This README is for the latest development version.
+> **Attention!**  
+> This README is for the latest development version.  
 > For the **release version** (0.10.2) go [here](https://github.com/netmute/ctags-lsp/tree/v0.10.2#readme).
 
 # CTags Language Server
