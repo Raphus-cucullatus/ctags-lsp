@@ -114,7 +114,7 @@ func checkCtagsInstallation(ctagsBin string) error {
 	cmd := exec.Command(ctagsBin, "--version", "--output-format=json")
 	output, err := cmd.Output()
 	if err != nil || !strings.Contains(string(output), "Universal Ctags") {
-		return fmt.Errorf("%s command not found or incorrect version. Universal Ctags with JSON support is required.\n%s", ctagsBin, getInstallInstructions())
+		return fmt.Errorf("%s command not found or incorrect version. Universal Ctags with JSON support is required.\nPlease visit https://github.com/universal-ctags/ctags for installation instructions", ctagsBin)
 	}
 
 	return nil
@@ -181,7 +181,6 @@ func handleRequest(server *Server, req RPCRequest) {
 	switch req.Method {
 	case "initialize":
 		handleInitialize(server, req)
-	case "initialized":
 	case "shutdown":
 		handleShutdown(server, req)
 	case "exit":
@@ -202,9 +201,6 @@ func handleRequest(server *Server, req RPCRequest) {
 		handleWorkspaceSymbol(server, req)
 	case "textDocument/documentSymbol":
 		handleDocumentSymbol(server, req)
-	case "$/cancelRequest":
-	case "$/setTrace":
-	case "$/logTrace":
 	default:
 		if isNotification(req) {
 			return
@@ -833,10 +829,8 @@ type DidOpenTextDocumentParams struct {
 }
 
 type TextDocument struct {
-	URI        string `json:"uri"`
-	LanguageID string `json:"languageId"`
-	Version    int    `json:"version"`
-	Text       string `json:"text"`
+	URI  string `json:"uri"`
+	Text string `json:"text"`
 }
 
 type TextDocumentPositionParams struct {
@@ -863,7 +857,6 @@ type DidCloseTextDocumentParams struct {
 
 type DidSaveTextDocumentParams struct {
 	TextDocument TextDocumentIdentifier `json:"textDocument"`
-	Text         string                 `json:"text,omitempty"`
 }
 
 type CompletionParams struct {
@@ -910,16 +903,12 @@ type Range struct {
 // TagEntry matches the JSON entry shape produced by Universal Ctags `--output-format=json`.
 // Paths are normalized to absolute file:// URIs once ingested.
 type TagEntry struct {
-	Type      string `json:"_type"`
-	Name      string `json:"name"`
-	Path      string `json:"path"`
-	Pattern   string `json:"pattern"`
-	Kind      string `json:"kind"`
-	Line      int    `json:"line"`
-	Scope     string `json:"scope,omitempty"`
-	ScopeKind string `json:"scopeKind,omitempty"`
-	TypeRef   string `json:"typeref,omitempty"`
-	Language  string `json:"language,omitempty"`
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	Pattern string `json:"pattern"`
+	Kind    string `json:"kind"`
+	Line    int    `json:"line"`
+	Scope   string `json:"scope,omitempty"`
 }
 
 type Server struct {
@@ -1222,13 +1211,14 @@ func parseTagfileEntry(line, tagsPath string, kindMap *tagfileKindMap) (TagEntry
 	}
 
 	entry := TagEntry{
-		Type:    "tag",
 		Name:    fields[0],
 		Path:    fields[1],
 		Pattern: strings.TrimSuffix(fields[2], ";\""),
 	}
 
 	kindField := ""
+	language := ""
+	scopeKindSet := false
 	nextFieldIndex := 3
 	if len(fields) > 3 && !strings.Contains(fields[3], ":") {
 		kindField = fields[3]
@@ -1250,19 +1240,17 @@ func parseTagfileEntry(line, tagsPath string, kindMap *tagfileKindMap) (TagEntry
 				entry.Line = lineNum
 			}
 		case "language":
-			entry.Language = value
+			language = value
 		case "kind":
 			kindField = value
-		case "typeref":
-			entry.TypeRef = value
 		case "scope":
 			entry.Scope = value
 		case "scopeKind":
-			entry.ScopeKind = value
+			scopeKindSet = true
 		default:
-			if entry.Scope == "" && entry.ScopeKind == "" && kindMap.isKindName(key) {
-				entry.ScopeKind = key
+			if entry.Scope == "" && !scopeKindSet && kindMap.isKindName(key) {
 				entry.Scope = value
+				scopeKindSet = true
 			}
 		}
 	}
@@ -1274,7 +1262,7 @@ func parseTagfileEntry(line, tagsPath string, kindMap *tagfileKindMap) (TagEntry
 	}
 
 	if kindField != "" {
-		kindField = resolveTagfileKind(kindField, &entry, kindMap)
+		kindField = resolveTagfileKind(kindField, language, kindMap)
 		entry.Kind = kindField
 	}
 
@@ -1289,12 +1277,12 @@ func parseTagfileEntry(line, tagsPath string, kindMap *tagfileKindMap) (TagEntry
 }
 
 // resolveTagfileKind maps a kind letter to its kind name using tagfile metadata.
-func resolveTagfileKind(kindField string, entry *TagEntry, kindMap *tagfileKindMap) string {
+func resolveTagfileKind(kindField, language string, kindMap *tagfileKindMap) string {
 	if len(kindField) != 1 {
 		return kindField
 	}
 
-	if mapped, ok := kindMap.resolve(entry.Language, kindField); ok {
+	if mapped, ok := kindMap.resolve(language, kindField); ok {
 		return mapped
 	}
 	return kindField
