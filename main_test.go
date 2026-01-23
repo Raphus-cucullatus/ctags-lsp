@@ -512,6 +512,42 @@ func TestScanWorkspaceMissingExplicitTagfile(t *testing.T) {
 	}
 }
 
+func TestBuildCtagsChunksBySize(t *testing.T) {
+	tempDir := t.TempDir()
+
+	type fileSpec struct {
+		name string
+		size int
+	}
+
+	specs := []fileSpec{
+		{name: "large.go", size: 200},
+		{name: "medium.go", size: 150},
+		{name: "small.go", size: 20},
+		{name: "tiny.go", size: 10},
+	}
+
+	files := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		path := filepath.Join(tempDir, spec.name)
+		if err := os.WriteFile(path, bytes.Repeat([]byte("a"), spec.size), 0o644); err != nil {
+			t.Fatalf("write %s: %v", spec.name, err)
+		}
+		files = append(files, spec.name)
+	}
+
+	chunks := buildCtagsChunksBySize(tempDir, files, 2)
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d", len(chunks))
+	}
+	if !reflect.DeepEqual(chunks[0], []string{"large.go", "small.go"}) {
+		t.Fatalf("unexpected first chunk: %v", chunks[0])
+	}
+	if !reflect.DeepEqual(chunks[1], []string{"medium.go", "tiny.go"}) {
+		t.Fatalf("unexpected second chunk: %v", chunks[1])
+	}
+}
+
 func TestListWorkspaceFilesCommandOrder(t *testing.T) {
 	t.Run("fd wins", func(t *testing.T) {
 		workspaceRoot := t.TempDir()

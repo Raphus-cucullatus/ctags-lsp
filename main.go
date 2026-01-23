@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -964,18 +965,10 @@ func (server *Server) scanWorkspace(rootURI string) error {
 		return err
 	}
 
-	workers := runtime.NumCPU()
-	size := (len(files) + workers - 1) / workers
+	chunks := buildCtagsChunksBySize(rootDir, files, runtime.NumCPU())
 	var wg sync.WaitGroup
 
-	for i := range workers {
-		start := i * size
-		if start >= len(files) {
-			break
-		}
-		end := min(start+size, len(files))
-		chunk := files[start:end]
-
+	for _, chunk := range chunks {
 		wg.Add(1)
 		go func(chunk []string) {
 			defer wg.Done()
@@ -992,6 +985,48 @@ func (server *Server) scanWorkspace(rootURI string) error {
 
 	wg.Wait()
 	return nil
+}
+
+// buildCtagsChunksBySize balances ctags work by file size because filesystem walks can
+// yield nondeterministic ordering, which otherwise makes chunk runtimes swing wildly.
+func buildCtagsChunksBySize(workspaceRoot string, files []string, workers int) [][]string {
+	type fileSizeEntry struct {
+		path string
+		size int64
+	}
+
+	entries := make([]fileSizeEntry, 0, len(files))
+	for _, path := range files {
+		statPath := path
+		if !filepath.IsAbs(statPath) {
+			statPath = filepath.Join(workspaceRoot, statPath)
+		}
+		info, err := os.Stat(statPath)
+		size := int64(0)
+		if err != nil {
+			// Files can disappear between listing and stat; size 0 keeps scheduling stable.
+			size = 0
+		} else {
+			size = info.Size()
+		}
+		entries = append(entries, fileSizeEntry{path: path, size: size})
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].size != entries[j].size {
+			return entries[i].size > entries[j].size
+		}
+		return entries[i].path < entries[j].path
+	})
+
+	bucketCount := min(workers, len(entries))
+	chunks := make([][]string, bucketCount)
+	for i, entry := range entries {
+		bucket := i % bucketCount
+		chunks[bucket] = append(chunks[bucket], entry.path)
+	}
+
+	return chunks
 }
 
 // listWorkspaceFiles returns file paths using the first available tool.
