@@ -558,10 +558,7 @@ func TestNormalizePath(t *testing.T) {
 
 	t.Run("relative path", func(t *testing.T) {
 		raw := filepath.Join("subdir", "nested", "..", "file.go")
-		got, err := normalizePath(baseDir, raw)
-		if err != nil {
-			t.Fatalf("normalize path: %v", err)
-		}
+		got := normalizePath(baseDir, raw)
 
 		want := filepath.Join(baseDir, "subdir", "file.go")
 		if got != want {
@@ -571,20 +568,11 @@ func TestNormalizePath(t *testing.T) {
 
 	t.Run("absolute path", func(t *testing.T) {
 		raw := filepath.Join(baseDir, "dir", "..", "file.go")
-		got, err := normalizePath(baseDir, raw)
-		if err != nil {
-			t.Fatalf("normalize path: %v", err)
-		}
+		got := normalizePath(baseDir, raw)
 
 		want := filepath.Join(baseDir, "file.go")
 		if got != want {
 			t.Fatalf("expected %q, got %q", want, got)
-		}
-	})
-
-	t.Run("empty path", func(t *testing.T) {
-		if _, err := normalizePath(baseDir, ""); err == nil {
-			t.Fatal("expected error for empty path")
 		}
 	})
 }
@@ -714,6 +702,23 @@ func TestScanWorkspaceMissingExplicitTagfile(t *testing.T) {
 
 	if err := server.scanWorkspace(server.rootURI); err == nil {
 		t.Fatal("expected scan workspace to fail for missing tagfile")
+	}
+}
+
+func TestScanWorkspaceWorkerFailure(t *testing.T) {
+	tempDir := t.TempDir()
+
+	sourcePath := filepath.Join(tempDir, "main.go")
+	if err := os.WriteFile(sourcePath, []byte("package demo\n"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	server := newTestServer(t)
+	server.rootURI = pathToFileURI(tempDir)
+	server.ctagsBin = "ctags-does-not-exist"
+
+	if err := server.scanWorkspace(server.rootURI); err == nil {
+		t.Fatal("expected scan workspace to fail when ctags cannot be executed")
 	}
 }
 
