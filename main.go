@@ -51,10 +51,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, checkCtags fu
 		cache: FileCache{
 			content: make(map[string][]string),
 		},
-		ctagsBin:    config.ctagsBin,
-		tagfilePath: config.tagfilePath,
-		languages:   config.languages,
-		output:      stdout,
+		rootlessTags: make(map[string][]TagEntry),
+		ctagsBin:     config.ctagsBin,
+		tagfilePath:  config.tagfilePath,
+		languages:    config.languages,
+		output:       stdout,
 	}
 
 	if config.benchmark {
@@ -223,17 +224,11 @@ func handleInitialize(server *Server, req RPCRequest) {
 		return
 	}
 
-	if rootURI == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			server.sendError(req.ID, -32603, "Failed to get current working directory", err.Error())
+	if rootURI != "" {
+		if err := server.setRootURI(rootURI); err != nil {
+			server.sendError(req.ID, -32602, "Invalid params", err.Error())
 			return
 		}
-		rootURI = pathToFileURI(cwd)
-	}
-	if err := server.setRootURI(rootURI); err != nil {
-		server.sendError(req.ID, -32602, "Invalid params", err.Error())
-		return
 	}
 
 	result := InitializeResult{
@@ -329,6 +324,24 @@ func handleDidOpen(server *Server, req RPCRequest) {
 	server.cache.mutex.Lock()
 	server.cache.content[normalizedURI] = content
 	server.cache.mutex.Unlock()
+
+	if server.rootURI == "" {
+		filePath := fileURIToPath(normalizedURI)
+		if rootDir, ok := findRootMarkerDir(filePath, ".git"); ok {
+			rootURI := pathToFileURI(rootDir)
+			if err := server.setRootURI(rootURI); err != nil {
+				// A configured tagfile can be missing for a newly detected workspace.
+				log.Printf("Failed to set root URI for %s: %v", normalizedURI, err)
+				server.rootURI = ""
+			}
+		}
+	}
+
+	if server.isRootlessFile(normalizedURI) {
+		if err := server.scanRootlessFile(normalizedURI); err != nil {
+			log.Printf("Error scanning rootless file %s: %v", normalizedURI, err)
+		}
+	}
 }
 
 func handleDidChange(server *Server, req RPCRequest) {
@@ -364,6 +377,10 @@ func handleDidClose(server *Server, req RPCRequest) {
 	server.cache.mutex.Lock()
 	delete(server.cache.content, normalizedURI)
 	server.cache.mutex.Unlock()
+
+	server.mutex.Lock()
+	delete(server.rootlessTags, normalizedURI)
+	server.mutex.Unlock()
 }
 
 func handleDidSave(server *Server, req RPCRequest) {
@@ -377,7 +394,14 @@ func handleDidSave(server *Server, req RPCRequest) {
 		return
 	}
 
-	if err := server.scanSingleFileTag(normalizedURI); err != nil {
+	if server.isRootlessFile(normalizedURI) {
+		if err := server.scanRootlessFile(normalizedURI); err != nil {
+			log.Printf("Error rescanning rootless file %s: %v", normalizedURI, err)
+		}
+		return
+	}
+
+	if err := server.scanWorkspaceFile(normalizedURI); err != nil {
 		log.Printf("Error rescanning file %s: %v", normalizedURI, err)
 	}
 }
@@ -430,7 +454,12 @@ func handleCompletion(server *Server, req RPCRequest) {
 	var items []CompletionItem
 	seenItems := make(map[string]bool)
 
-	for _, entry := range server.tagEntries {
+	server.mutex.Lock()
+	tagEntries := server.tagEntries
+	if server.isRootlessFile(normalizedURI) {
+		tagEntries = server.rootlessTags[normalizedURI]
+	}
+	for _, entry := range tagEntries {
 		if strings.HasPrefix(strings.ToLower(entry.Name), strings.ToLower(word)) {
 			if seenItems[entry.Name] {
 				continue
@@ -469,6 +498,7 @@ func handleCompletion(server *Server, req RPCRequest) {
 			}
 		}
 	}
+	server.mutex.Unlock()
 
 	result := CompletionList{
 		IsIncomplete: false,
@@ -501,7 +531,11 @@ func handleDefinition(server *Server, req RPCRequest) {
 	defer server.mutex.Unlock()
 
 	var locations []Location
-	for _, entry := range server.tagEntries {
+	tagEntries := server.tagEntries
+	if server.isRootlessFile(normalizedURI) {
+		tagEntries = server.rootlessTags[normalizedURI]
+	}
+	for _, entry := range tagEntries {
 		if entry.Name == symbol {
 			content, err := server.cache.GetOrLoadFileContent(entry.Path)
 			if err != nil {
@@ -591,7 +625,11 @@ func handleDocumentSymbol(server *Server, req RPCRequest) {
 
 	var symbols []SymbolInformation
 
-	for _, entry := range server.tagEntries {
+	tagEntries := server.tagEntries
+	if server.isRootlessFile(normalizedURI) {
+		tagEntries = server.rootlessTags[normalizedURI]
+	}
+	for _, entry := range tagEntries {
 		if entry.Path != normalizedURI {
 			continue
 		}
@@ -620,6 +658,47 @@ func handleDocumentSymbol(server *Server, req RPCRequest) {
 	}
 
 	server.sendResult(req.ID, symbols)
+}
+
+// findRootMarkerDir searches for markerName starting from the file directory and walking upwards.
+func findRootMarkerDir(filePath, markerName string) (string, bool) {
+	dir := filepath.Dir(filePath)
+	for {
+		markerPath := filepath.Join(dir, markerName)
+		if _, err := os.Stat(markerPath); err == nil {
+			return dir, true
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+// isRootlessFile reports whether a document should use per-file tags.
+func (server *Server) isRootlessFile(fileURI string) bool {
+	if server.rootURI == "" {
+		return true
+	}
+	return !isFileInRoot(server.rootURI, fileURI)
+}
+
+// isFileInRoot reports whether fileURI resolves within rootURI.
+func isFileInRoot(rootURI, fileURI string) bool {
+	rootDir := fileURIToPath(rootURI)
+	filePath := fileURIToPath(fileURI)
+
+	rel, err := filepath.Rel(rootDir, filePath)
+	if err != nil {
+		// filepath.Rel fails on different volumes, which means the file is outside the root.
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
 }
 
 // normalizeFileURI expects external URIs.
@@ -912,15 +991,16 @@ type TagEntry struct {
 }
 
 type Server struct {
-	tagEntries  []TagEntry
-	rootURI     string
-	cache       FileCache
-	initialized bool
-	ctagsBin    string
-	tagfilePath string
-	languages   string
-	output      io.Writer
-	mutex       sync.Mutex
+	tagEntries   []TagEntry
+	rootlessTags map[string][]TagEntry
+	rootURI      string
+	cache        FileCache
+	initialized  bool
+	ctagsBin     string
+	tagfilePath  string
+	languages    string
+	output       io.Writer
+	mutex        sync.Mutex
 }
 
 type FileCache struct {
@@ -966,9 +1046,14 @@ func (server *Server) scanWorkspace(rootURI string) error {
 			cmd.Dir = rootDir
 			cmd.Stdin = strings.NewReader(strings.Join(chunk, "\n"))
 
-			if err := server.processTagsOutput(cmd); err != nil {
+			entries, err := server.runCtags(cmd, rootDir)
+			if err != nil {
 				log.Printf("ctags error: %v", err)
+				return
 			}
+			server.mutex.Lock()
+			server.tagEntries = append(server.tagEntries, entries...)
+			server.mutex.Unlock()
 		}(chunk)
 	}
 
@@ -1058,8 +1143,14 @@ func parseFileList(toolName string, output []byte) ([]string, error) {
 	return strings.Split(trimmed, "\n"), nil
 }
 
-// scanSingleFileTag rescans a single file URI and drops any previous entries for that URI.
-func (server *Server) scanSingleFileTag(fileURI string) error {
+// scanWorkspaceFile rescans a workspace file URI and drops any previous entries for that URI.
+func (server *Server) scanWorkspaceFile(fileURI string) error {
+	rootDir := fileURIToPath(server.rootURI)
+	entries, err := server.scanFile(fileURI, rootDir)
+	if err != nil {
+		return err
+	}
+
 	server.mutex.Lock()
 	newEntries := make([]TagEntry, 0, len(server.tagEntries))
 	for _, entry := range server.tagEntries {
@@ -1067,26 +1158,42 @@ func (server *Server) scanSingleFileTag(fileURI string) error {
 			newEntries = append(newEntries, entry)
 		}
 	}
-	server.tagEntries = newEntries
+	server.tagEntries = append(newEntries, entries...)
 	server.mutex.Unlock()
-
-	filePath := fileURIToPath(fileURI)
-	cmd := exec.Command(server.ctagsBin, server.ctagsArgs(filePath)...)
-	rootDir := fileURIToPath(server.rootURI)
-	cmd.Dir = rootDir
-	return server.processTagsOutput(cmd)
+	return nil
 }
 
-func (server *Server) processTagsOutput(cmd *exec.Cmd) error {
-	stdout, err := cmd.StdoutPipe()
+// scanRootlessFile updates tags for a file outside the workspace root.
+func (server *Server) scanRootlessFile(fileURI string) error {
+	baseDir := filepath.Dir(fileURIToPath(fileURI))
+	entries, err := server.scanFile(fileURI, baseDir)
 	if err != nil {
-		return fmt.Errorf("failed to get stdout from ctags command: %v", err)
+		return err
 	}
 
-	rootDir := fileURIToPath(server.rootURI)
+	server.mutex.Lock()
+	server.rootlessTags[fileURI] = entries
+	server.mutex.Unlock()
+	return nil
+}
+
+// scanFile runs ctags for a file.
+// baseDir is needed for filepath normalization in `runCtags()`.
+func (server *Server) scanFile(fileURI, baseDir string) ([]TagEntry, error) {
+	filePath := fileURIToPath(fileURI)
+	cmd := exec.Command(server.ctagsBin, server.ctagsArgs(filePath)...)
+	cmd.Dir = baseDir
+	return server.runCtags(cmd, baseDir)
+}
+
+func (server *Server) runCtags(cmd *exec.Cmd, baseDir string) ([]TagEntry, error) {
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stdout from ctags command: %v", err)
+	}
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start ctags command: %v", err)
+		return nil, fmt.Errorf("failed to start ctags command: %v", err)
 	}
 
 	scanner := bufio.NewScanner(stdout)
@@ -1098,7 +1205,7 @@ func (server *Server) processTagsOutput(cmd *exec.Cmd) error {
 			continue
 		}
 
-		normalized, err := normalizePath(rootDir, entry.Path)
+		normalized, err := normalizePath(baseDir, entry.Path)
 		if err != nil {
 			log.Printf("Failed to normalize path for %s: %v", entry.Path, err)
 			continue
@@ -1109,18 +1216,14 @@ func (server *Server) processTagsOutput(cmd *exec.Cmd) error {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("error reading ctags output: %v", err)
+		return nil, fmt.Errorf("error reading ctags output: %v", err)
 	}
 
 	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("ctags command failed: %v", err)
+		return nil, fmt.Errorf("ctags command failed: %v", err)
 	}
 
-	server.mutex.Lock()
-	server.tagEntries = append(server.tagEntries, entries...)
-	server.mutex.Unlock()
-
-	return nil
+	return entries, nil
 }
 
 func (server *Server) ctagsArgs(extra ...string) []string {
@@ -1134,7 +1237,7 @@ func (server *Server) ctagsArgs(extra ...string) []string {
 // -- ### Tagfile Parsing ###
 // -- Mapping tagfile formats into TagEntry records
 
-// parseTagfile reads a tags file and returns entries in the same shape as `processTagsOutput`.
+// parseTagfile reads a tags file and returns entries in the same shape as `runCtags`.
 func parseTagfile(tagsPath string) ([]TagEntry, error) {
 	file, err := os.Open(tagsPath)
 	if err != nil {

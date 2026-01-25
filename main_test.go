@@ -54,9 +54,10 @@ func newTestServer(t *testing.T) *Server {
 		cache: FileCache{
 			content: make(map[string][]string),
 		},
-		ctagsBin:    config.ctagsBin,
-		tagfilePath: config.tagfilePath,
-		languages:   config.languages,
+		rootlessTags: make(map[string][]TagEntry),
+		ctagsBin:     config.ctagsBin,
+		tagfilePath:  config.tagfilePath,
+		languages:    config.languages,
 	}
 }
 
@@ -177,6 +178,24 @@ func parseLSPErrorResponse(t *testing.T, raw string) RPCErrorResponse {
 	}
 
 	return resp
+}
+
+func openDocument(t *testing.T, server *Server, uri, text string) {
+	t.Helper()
+
+	params := DidOpenTextDocumentParams{
+		TextDocument: TextDocument{
+			URI:  uri,
+			Text: text,
+		},
+	}
+	paramsBytes, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+
+	req := RPCRequest{Params: paramsBytes}
+	handleDidOpen(server, req)
 }
 
 func hasTag(entries []TagEntry, name, path string) bool {
@@ -327,6 +346,22 @@ func TestInitializeRootSelection(t *testing.T) {
 	}
 }
 
+func TestInitializeRootless(t *testing.T) {
+	server := newTestServer(t)
+
+	resp := initializeServerWithParams(t, server, InitializeParams{})
+
+	if resp.Jsonrpc != "2.0" {
+		t.Fatalf("expected jsonrpc 2.0, got %q", resp.Jsonrpc)
+	}
+	if server.rootURI != "" {
+		t.Fatalf("expected empty root uri, got %q", server.rootURI)
+	}
+	if !server.initialized {
+		t.Fatal("expected server to be initialized")
+	}
+}
+
 func TestInitializeRejectsMissingTagfile(t *testing.T) {
 	tempDir := t.TempDir()
 	server := newTestServer(t)
@@ -345,6 +380,88 @@ func TestInitializeRejectsMissingTagfile(t *testing.T) {
 	}
 	if server.initialized {
 		t.Fatal("expected server initialization to fail for missing tagfile")
+	}
+}
+
+func TestDidOpenSetsRootURIFromMarker(t *testing.T) {
+	rootDir := t.TempDir()
+	markerPath := filepath.Join(rootDir, ".git")
+	if err := os.WriteFile(markerPath, []byte(""), 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	nestedDir := filepath.Join(rootDir, "nested")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	sourcePath := filepath.Join(nestedDir, "rooted.go")
+	source := []byte("package demo\n\ntype Rooted struct{}\n")
+	if err := os.WriteFile(sourcePath, source, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	server := newTestServer(t)
+	fileURI := pathToFileURI(sourcePath)
+	openDocument(t, server, fileURI, string(source))
+
+	expectedRootURI := pathToFileURI(rootDir)
+	if server.rootURI != expectedRootURI {
+		t.Fatalf("expected root uri %q, got %q", expectedRootURI, server.rootURI)
+	}
+	if _, ok := server.rootlessTags[fileURI]; ok {
+		t.Fatal("expected no rootless tags for rooted file")
+	}
+}
+
+func TestDidOpenRootlessWithoutMarker(t *testing.T) {
+	tempDir := t.TempDir()
+	sourcePath := filepath.Join(tempDir, "rootless.go")
+	source := []byte("package demo\n\ntype Rootless struct{}\n")
+	if err := os.WriteFile(sourcePath, source, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	server := newTestServer(t)
+	fileURI := pathToFileURI(sourcePath)
+	openDocument(t, server, fileURI, string(source))
+
+	if server.rootURI != "" {
+		t.Fatalf("expected empty root uri, got %q", server.rootURI)
+	}
+	if !hasTag(server.rootlessTags[fileURI], "Rootless", fileURI) {
+		t.Fatal("expected rootless tags for opened file")
+	}
+}
+
+func TestDidOpenRootlessOutsideWorkspace(t *testing.T) {
+	rootDir := t.TempDir()
+	rootedPath := filepath.Join(rootDir, "rooted.go")
+	if err := os.WriteFile(rootedPath, []byte("package demo\n\ntype RootSymbol struct{}\n"), 0o644); err != nil {
+		t.Fatalf("write rooted file: %v", err)
+	}
+
+	server := newTestServer(t)
+	rootURI := pathToFileURI(rootDir)
+	if err := server.setRootURI(rootURI); err != nil {
+		t.Fatalf("set root uri: %v", err)
+	}
+
+	otherDir := t.TempDir()
+	sourcePath := filepath.Join(otherDir, "outside.go")
+	source := []byte("package demo\n\ntype Outside struct{}\n")
+	if err := os.WriteFile(sourcePath, source, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	fileURI := pathToFileURI(sourcePath)
+	openDocument(t, server, fileURI, string(source))
+
+	if server.rootURI != rootURI {
+		t.Fatalf("expected root uri %q, got %q", rootURI, server.rootURI)
+	}
+	if !hasTag(server.rootlessTags[fileURI], "Outside", fileURI) {
+		t.Fatal("expected rootless tags for file outside workspace")
 	}
 }
 

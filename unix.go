@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 )
 
-// pathToFileURI expects an absolute, cleaned filesystem path.
+// pathToFileURI expects path was run through `normalizePath()`.
 func pathToFileURI(path string) string {
 	slashPath := filepath.ToSlash(path)
 	return (&url.URL{Scheme: "file", Path: slashPath}).String()
