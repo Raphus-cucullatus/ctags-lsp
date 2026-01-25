@@ -1,7 +1,3 @@
-> **Attention!**  
-> This README is for the latest development version.  
-> For the **release version** (0.10.2) go [here](https://github.com/netmute/ctags-lsp/tree/v0.10.2#readme).
-
 # CTags Language Server
 
 A Language Server Protocol (LSP) implementation using `universal-ctags` as backend, supporting 100+ languages.

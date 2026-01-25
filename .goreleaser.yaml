@@ -39,3 +39,6 @@ changelog:
     exclude:
       - "^docs:"
       - "^chore:"
+
+release:
+  draft: true
