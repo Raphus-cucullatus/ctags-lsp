@@ -404,6 +404,39 @@ func TestInitializeRootless(t *testing.T) {
 	}
 }
 
+func TestShowMessageNotification(t *testing.T) {
+	server := newTestServer(t)
+	var output bytes.Buffer
+	server.output = &output
+
+	server.showMessage(fmt.Errorf("scan result: %s", "ok"))
+
+	req, err := readMessage(bufio.NewReader(strings.NewReader(output.String())))
+	if err != nil {
+		t.Fatalf("read notification: %v", err)
+	}
+	if req.Jsonrpc != "2.0" {
+		t.Fatalf("expected jsonrpc 2.0, got %q", req.Jsonrpc)
+	}
+	if req.ID != nil {
+		t.Fatalf("expected no id, got %v", req.ID)
+	}
+	if req.Method != "window/showMessage" {
+		t.Fatalf("expected method window/showMessage, got %q", req.Method)
+	}
+
+	var params ShowMessageParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		t.Fatalf("unmarshal params: %v", err)
+	}
+	if params.Type != 2 {
+		t.Fatalf("expected message type %d, got %d", 2, params.Type)
+	}
+	if params.Message != "scan result: ok" {
+		t.Fatalf("expected message %q, got %q", "scan result: ok", params.Message)
+	}
+}
+
 func TestInitializeRejectsMissingTagfile(t *testing.T) {
 	tempDir := t.TempDir()
 	server := newTestServer(t)

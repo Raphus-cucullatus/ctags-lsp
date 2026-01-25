@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
 	"net/url"
 	"os"
 	"os/exec"
@@ -292,8 +291,8 @@ func (server *Server) setRootURI(rootURI string) error {
 		}
 	}
 	if err := server.scanWorkspace(rootURI); err != nil {
-		// Only happens when workspace is empty, which is not critical. Log and continue.
-		log.Printf("Error while scanning workspace: %v", err)
+		// Only happens when workspace is empty, which is not critical. Notify and continue.
+		server.showMessage(fmt.Errorf("error while scanning workspace: %v", err))
 	}
 	return nil
 }
@@ -328,8 +327,8 @@ func handleDidOpen(server *Server, req RPCRequest) {
 		if rootDir, ok := findRootMarkerDir(filePath, ".git"); ok {
 			rootURI := pathToFileURI(rootDir)
 			if err := server.setRootURI(rootURI); err != nil {
-				// Requested tagfile is not present. Don't scan against users whishes. Log and abort.
-				log.Printf("Failed to set root URI for %s: %v", normalizedURI, err)
+				// Requested tagfile is not present. Don't scan against users wishes. Notify and abort.
+				server.showMessage(fmt.Errorf("failed to set root URI for %s: %v", normalizedURI, err))
 				server.rootURI = ""
 			}
 		}
@@ -337,8 +336,8 @@ func handleDidOpen(server *Server, req RPCRequest) {
 
 	if server.isRootlessFile(normalizedURI) {
 		if err := server.scanRootlessFile(normalizedURI); err != nil {
-			// ctags command failed. Very unlikely. Log and continue.
-			log.Printf("Error scanning rootless file %s: %v", normalizedURI, err)
+			// ctags command failed. Very unlikely. Notify and continue.
+			server.showMessage(fmt.Errorf("error scanning rootless file %s: %v", normalizedURI, err))
 		}
 	}
 }
@@ -395,15 +394,15 @@ func handleDidSave(server *Server, req RPCRequest) {
 
 	if server.isRootlessFile(normalizedURI) {
 		if err := server.scanRootlessFile(normalizedURI); err != nil {
-			// ctags command failed. Very unlikely. Log and continue.
-			log.Printf("Error rescanning rootless file %s: %v", normalizedURI, err)
+			// ctags command failed. Very unlikely. Notify and continue.
+			server.showMessage(fmt.Errorf("error rescanning rootless file %s: %v", normalizedURI, err))
 		}
 		return
 	}
 
 	if err := server.scanWorkspaceFile(normalizedURI); err != nil {
-		// ctags command failed. Very unlikely. Log and continue.
-		log.Printf("Error rescanning file %s: %v", normalizedURI, err)
+		// ctags command failed. Very unlikely. Notify and continue.
+		server.showMessage(fmt.Errorf("error rescanning file %s: %v", normalizedURI, err))
 	}
 }
 
@@ -541,7 +540,7 @@ func handleDefinition(server *Server, req RPCRequest) {
 			content, err := server.cache.GetOrLoadFileContent(entry.Path)
 			if err != nil {
 				// Read error from file that wasn't already in cache.
-				log.Printf("Failed to get content for file %s: %v", entry.Path, err)
+				server.showMessage(fmt.Errorf("failed to get content for file %s: %v", entry.Path, err))
 				continue
 			}
 
@@ -589,7 +588,7 @@ func handleWorkspaceSymbol(server *Server, req RPCRequest) {
 		content, err := server.cache.GetOrLoadFileContent(entry.Path)
 		if err != nil {
 			// Read error from file that wasn't already in cache.
-			log.Printf("Failed to get content for file %s: %v", entry.Path, err)
+			server.showMessage(fmt.Errorf("failed to get content for file %s: %v", entry.Path, err))
 			continue
 		}
 
@@ -653,7 +652,7 @@ func handleDocumentSymbol(server *Server, req RPCRequest) {
 		content, err := server.cache.GetOrLoadFileContent(entry.Path)
 		if err != nil {
 			// Read error from file that wasn't already in cache.
-			log.Printf("Failed to get content for file %s: %v", entry.Path, err)
+			server.showMessage(fmt.Errorf("failed to get content for file %s: %v", entry.Path, err))
 			continue
 		}
 
@@ -670,6 +669,19 @@ func handleDocumentSymbol(server *Server, req RPCRequest) {
 	}
 
 	server.sendResult(req.ID, symbols)
+}
+
+// showMessage sends a window/showMessage notification to the client.
+func (server *Server) showMessage(err error) {
+	notification := RPCNotification{
+		Jsonrpc: "2.0",
+		Method:  "window/showMessage",
+		Params: ShowMessageParams{
+			Type:    messageTypeWarning,
+			Message: err.Error(),
+		},
+	}
+	server.sendResponse(notification)
 }
 
 // findRootMarkerDir searches for markerName starting from the file directory and walking upwards.
@@ -986,6 +998,13 @@ type Range struct {
 	Start Position `json:"start"`
 	End   Position `json:"end"`
 }
+
+type ShowMessageParams struct {
+	Type    int    `json:"type"`
+	Message string `json:"message"`
+}
+
+const messageTypeWarning = 2
 
 // TagEntry matches the JSON entry shape produced by Universal Ctags `--output-format=json`.
 // Paths are normalized to absolute file:// URIs once ingested.
@@ -1965,7 +1984,7 @@ func (server *Server) sendError(id *json.RawMessage, code int, message string, d
 	server.sendResponse(response)
 }
 
-// sendResponse writes a JSON-RPC response to `server.output`.
+// sendResponse writes a JSON-RPC response or notification to `server.output`.
 func (server *Server) sendResponse(resp any) {
 	body, _ := json.Marshal(resp)
 
@@ -1977,6 +1996,12 @@ type RPCRequest struct {
 	ID      *json.RawMessage `json:"id,omitempty"`
 	Method  string           `json:"method"`
 	Params  json.RawMessage  `json:"params,omitempty"`
+}
+
+type RPCNotification struct {
+	Jsonrpc string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
 }
 
 type RPCSuccessResponse struct {
