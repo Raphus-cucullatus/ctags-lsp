@@ -629,11 +629,19 @@ func handleDocumentSymbol(server *Server, req RPCRequest) {
 	if server.isRootlessFile(normalizedURI) {
 		tagEntries = server.rootlessTags[normalizedURI]
 	}
+	var documentEntries []TagEntry
 	for _, entry := range tagEntries {
 		if entry.Path != normalizedURI {
 			continue
 		}
+		documentEntries = append(documentEntries, entry)
+	}
 
+	sort.SliceStable(documentEntries, func(i, j int) bool {
+		return documentEntries[i].Line < documentEntries[j].Line
+	})
+
+	for _, entry := range documentEntries {
 		kind, err := GetLSPSymbolKind(entry.Kind)
 		if err != nil {
 			continue

@@ -46,6 +46,12 @@ type rpcSuccessEnvelope struct {
 	Result  InitializeResult `json:"result"`
 }
 
+type rpcResultEnvelope struct {
+	Jsonrpc string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Result  json.RawMessage `json:"result"`
+}
+
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 
@@ -137,6 +143,42 @@ func parseLSPResponse(t *testing.T, raw string) rpcSuccessEnvelope {
 	}
 
 	var resp rpcSuccessEnvelope
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	return resp
+}
+
+func parseLSPResult(t *testing.T, raw string) rpcResultEnvelope {
+	t.Helper()
+
+	parts := strings.SplitN(raw, "\r\n\r\n", 2)
+	if len(parts) != 2 {
+		t.Fatalf("expected response with headers and body, got %q", raw)
+	}
+
+	contentLength := 0
+	for _, line := range strings.Split(parts[0], "\r\n") {
+		if after, ok := strings.CutPrefix(line, "Content-Length:"); ok {
+			length, err := strconv.Atoi(strings.TrimSpace(after))
+			if err != nil {
+				t.Fatalf("invalid Content-Length: %v", err)
+			}
+			contentLength = length
+			break
+		}
+	}
+	if contentLength == 0 {
+		t.Fatalf("missing Content-Length header in %q", parts[0])
+	}
+
+	body := parts[1]
+	if contentLength != len(body) {
+		t.Fatalf("expected Content-Length %d, got %d", contentLength, len(body))
+	}
+
+	var resp rpcResultEnvelope
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
@@ -462,6 +504,52 @@ func TestDidOpenRootlessOutsideWorkspace(t *testing.T) {
 	}
 	if !hasTag(server.rootlessTags[fileURI], "Outside", fileURI) {
 		t.Fatal("expected rootless tags for file outside workspace")
+	}
+}
+
+func TestDocumentSymbolsOrderedByLine(t *testing.T) {
+	tempDir := t.TempDir()
+	sourcePath := filepath.Join(tempDir, "symbols.go")
+	source := []byte("package demo\n\nfunc Alpha() {}\n\nfunc Beta() {}\n\nfunc Gamma() {}\n")
+	if err := os.WriteFile(sourcePath, source, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	fileURI := pathToFileURI(sourcePath)
+	server := newTestServer(t)
+	server.rootURI = pathToFileURI(tempDir)
+	server.tagEntries = []TagEntry{
+		{Name: "Gamma", Path: fileURI, Kind: "fn", Line: 7},
+		{Name: "Alpha", Path: fileURI, Kind: "fn", Line: 3},
+		{Name: "Beta", Path: fileURI, Kind: "fn", Line: 5},
+	}
+
+	params := DocumentSymbolParams{
+		TextDocument: TextDocumentIdentifier{URI: fileURI},
+	}
+	paramsBytes, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+
+	id := json.RawMessage("1")
+	req := RPCRequest{ID: &id, Params: paramsBytes}
+	var output bytes.Buffer
+	server.output = &output
+	handleDocumentSymbol(server, req)
+
+	resp := parseLSPResult(t, output.String())
+	var symbols []SymbolInformation
+	if err := json.Unmarshal(resp.Result, &symbols); err != nil {
+		t.Fatalf("unmarshal symbols: %v", err)
+	}
+	if len(symbols) != 3 {
+		t.Fatalf("expected 3 symbols, got %d", len(symbols))
+	}
+	got := []string{symbols[0].Name, symbols[1].Name, symbols[2].Name}
+	want := []string{"Alpha", "Beta", "Gamma"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected symbol order %v, got %v", want, got)
 	}
 }
 
