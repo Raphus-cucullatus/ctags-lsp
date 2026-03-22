@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 )
 
 // -- ### Main ###
@@ -625,8 +626,6 @@ func handleDocumentSymbol(server *Server, req RPCRequest) {
 	server.mutex.Lock()
 	defer server.mutex.Unlock()
 
-	var symbols []SymbolInformation
-
 	tagEntries := server.tagEntries
 	if server.isRootlessFile(normalizedURI) {
 		tagEntries = server.rootlessTags[normalizedURI]
@@ -643,32 +642,68 @@ func handleDocumentSymbol(server *Server, req RPCRequest) {
 		return documentEntries[i].Line < documentEntries[j].Line
 	})
 
+	content, err := server.cache.GetOrLoadFileContent(normalizedURI)
+	if err != nil {
+		server.showMessage(fmt.Errorf("failed to get content for file %s: %v", normalizedURI, err))
+		server.sendResult(req.ID, []*DocumentSymbol{})
+		return
+	}
+
+	nodes := make([]*DocumentSymbol, 0, len(documentEntries))
+	scopes := make([]string, 0, len(documentEntries))
+	byName := make(map[string]*DocumentSymbol, len(documentEntries))
+
 	for _, entry := range documentEntries {
 		kind, err := GetLSPSymbolKind(entry.Kind)
 		if err != nil {
 			continue
 		}
 
-		content, err := server.cache.GetOrLoadFileContent(entry.Path)
-		if err != nil {
-			// Read error from file that wasn't already in cache.
-			server.showMessage(fmt.Errorf("failed to get content for file %s: %v", entry.Path, err))
-			continue
+		selectionRange := findSymbolRangeInFile(content, entry.Name, entry.Line)
+		enclosingRange := findTrimmedLineRange(content, entry.Line)
+		if selectionRange.Start.Line != enclosingRange.Start.Line ||
+			selectionRange.End.Line != enclosingRange.End.Line ||
+			selectionRange.Start.Character < enclosingRange.Start.Character ||
+			selectionRange.End.Character > enclosingRange.End.Character {
+			selectionRange = enclosingRange
 		}
 
-		symbolRange := findSymbolRangeInFile(content, entry.Name, entry.Line)
-
-		symbol := SymbolInformation{
-			Name:          entry.Name,
-			Kind:          kind,
-			Location:      Location{URI: entry.Path, Range: symbolRange},
-			ContainerName: entry.Scope,
+		symbol := &DocumentSymbol{
+			Name:           entry.Name,
+			Kind:           kind,
+			Range:          enclosingRange,
+			SelectionRange: selectionRange,
 		}
-
-		symbols = append(symbols, symbol)
+		nodes = append(nodes, symbol)
+		scopes = append(scopes, entry.Scope)
+		if _, ok := byName[entry.Name]; !ok {
+			byName[entry.Name] = symbol
+		}
 	}
 
-	server.sendResult(req.ID, symbols)
+	children := make(map[*DocumentSymbol]bool, len(nodes))
+	for idx, node := range nodes {
+		scope := scopes[idx]
+		if scope == "" {
+			continue
+		}
+		parent := byName[scope]
+		if parent == nil || parent == node {
+			continue
+		}
+		parent.Children = append(parent.Children, node)
+		children[node] = true
+	}
+
+	topLevel := make([]*DocumentSymbol, 0, len(nodes))
+	for _, node := range nodes {
+		if children[node] {
+			continue
+		}
+		topLevel = append(topLevel, node)
+	}
+
+	server.sendResult(req.ID, topLevel)
 }
 
 // showMessage sends a window/showMessage notification to the client.
@@ -829,6 +864,31 @@ func findSymbolRangeInFile(lines []string, symbolName string, lineNumber int) Ra
 	}
 }
 
+func findTrimmedLineRange(lines []string, lineNumber int) Range {
+	lineIdx := lineNumber - 1
+	if lineIdx < 0 || lineIdx >= len(lines) {
+		return Range{
+			Start: Position{Line: lineIdx, Character: 0},
+			End:   Position{Line: lineIdx, Character: 0},
+		}
+	}
+
+	runes := []rune(lines[lineIdx])
+	start := 0
+	for start < len(runes) && unicode.IsSpace(runes[start]) {
+		start++
+	}
+	end := len(runes)
+	for end > start && unicode.IsSpace(runes[end-1]) {
+		end--
+	}
+
+	return Range{
+		Start: Position{Line: lineIdx, Character: start},
+		End:   Position{Line: lineIdx, Character: end},
+	}
+}
+
 func (server *Server) getCurrentWord(filePath string, pos Position) (string, error) {
 	lines, err := server.cache.GetOrLoadFileContent(filePath)
 	if err != nil {
@@ -921,6 +981,17 @@ type SymbolInformation struct {
 	Kind          int      `json:"kind"`
 	Location      Location `json:"location"`
 	ContainerName string   `json:"containerName,omitempty"`
+}
+
+type DocumentSymbol struct {
+	Name           string            `json:"name"`
+	Detail         string            `json:"detail,omitempty"`
+	Kind           int               `json:"kind"`
+	Tags           []int             `json:"tags,omitempty"`
+	Deprecated     bool              `json:"deprecated,omitempty"`
+	Range          Range             `json:"range"`
+	SelectionRange Range             `json:"selectionRange"`
+	Children       []*DocumentSymbol `json:"children,omitempty"`
 }
 
 type DidOpenTextDocumentParams struct {

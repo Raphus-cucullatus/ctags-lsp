@@ -572,7 +572,7 @@ func TestDocumentSymbolsOrderedByLine(t *testing.T) {
 	handleDocumentSymbol(server, req)
 
 	resp := parseLSPResult(t, output.String())
-	var symbols []SymbolInformation
+	var symbols []*DocumentSymbol
 	if err := json.Unmarshal(resp.Result, &symbols); err != nil {
 		t.Fatalf("unmarshal symbols: %v", err)
 	}
@@ -583,6 +583,53 @@ func TestDocumentSymbolsOrderedByLine(t *testing.T) {
 	want := []string{"Alpha", "Beta", "Gamma"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected symbol order %v, got %v", want, got)
+	}
+}
+
+func TestDocumentSymbolsHierarchicalByScope(t *testing.T) {
+	tempDir := t.TempDir()
+	sourcePath := filepath.Join(tempDir, "symbols.go")
+	source := []byte("package demo\n\ntype Foo struct{}\n\nfunc (Foo) Bar() {}\n")
+	if err := os.WriteFile(sourcePath, source, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	fileURI := pathToFileURI(sourcePath)
+	server := newTestServer(t)
+	server.rootURI = pathToFileURI(tempDir)
+	server.tagEntries = []TagEntry{
+		{Name: "Foo", Path: fileURI, Kind: "type", Line: 3},
+		{Name: "Bar", Path: fileURI, Kind: "method", Line: 5, Scope: "Foo"},
+	}
+
+	params := DocumentSymbolParams{
+		TextDocument: TextDocumentIdentifier{URI: fileURI},
+	}
+	paramsBytes, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+
+	id := json.RawMessage("1")
+	req := RPCRequest{ID: &id, Params: paramsBytes}
+	var output bytes.Buffer
+	server.output = &output
+	handleDocumentSymbol(server, req)
+
+	resp := parseLSPResult(t, output.String())
+	var symbols []*DocumentSymbol
+	if err := json.Unmarshal(resp.Result, &symbols); err != nil {
+		t.Fatalf("unmarshal symbols: %v", err)
+	}
+
+	if len(symbols) != 1 {
+		t.Fatalf("expected 1 top-level symbol, got %d", len(symbols))
+	}
+	if symbols[0].Name != "Foo" {
+		t.Fatalf("expected Foo, got %q", symbols[0].Name)
+	}
+	if len(symbols[0].Children) != 1 || symbols[0].Children[0].Name != "Bar" {
+		t.Fatalf("expected Foo -> Bar hierarchy, got %#v", symbols[0])
 	}
 }
 
